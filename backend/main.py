@@ -7,13 +7,16 @@ import os
 import shutil
 import json
 import sys
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Add root directoy to sys.path to access services
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from services.agent_controller import run_resume_pipeline, generate_resume_from_linkedin
 from services.resume_parser import extract_text
-from services.db.lancedb_client import store_resume, get_or_create_table
+from services.db.lancedb_client import store_resume, get_or_create_table, search_resumes_semantic
 from services.export_service import generate_docx
 
 app = FastAPI(title="Resume Intelligence API")
@@ -52,7 +55,11 @@ async def login(request: LoginRequest):
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 @app.post("/api/resumes/upload")
-async def upload_resumes(files: List[UploadFile] = File(...), store_db: str = Form("true")):
+async def upload_resumes(
+    files: List[UploadFile] = File(...), 
+    store_db: str = Form("true"),
+    x_openrouter_key: Optional[str] = Header(None)
+):
     print(f"--- Uploading {len(files)} files ---")
     results = []
     store_db_bool = store_db.lower() == "true"
@@ -67,7 +74,8 @@ async def upload_resumes(files: List[UploadFile] = File(...), store_db: str = Fo
             text = extract_text(file_path)
             if store_db_bool:
                 print(f"Storing in DB: {file.filename}")
-                store_resume(file.filename, text)
+                # Pass the key to store_resume so it can compute embeddings
+                store_resume(file.filename, text, api_key=x_openrouter_key)
             
             results.append({"filename": file.filename, "status": "indexed"})
             print(f"Completed: {file.filename}")
@@ -83,58 +91,54 @@ async def search_resumes(
     x_openrouter_key: Optional[str] = Header(None),
     x_llm_model: Optional[str] = Header(None)
 ):
-    # This logic is adapted from Search_Resumes.py but would ideally be in a service
-    table = get_or_create_table()
-    df = table.to_pandas()
+    print(f"--- Search Request: '{request.query}' ---")
+    # Perform semantic search to filter relevant resumes/chunks
+    df = search_resumes_semantic(request.query, limit=10, api_key=x_openrouter_key)
     
     if df.empty:
+        print("DEBUG: Search returned 0 results from LanceDB.")
         return {"results": []}
 
+    print(f"DEBUG: Search returned {len(df)} results. Passing to LLM...")
+    # Format the filtered results for the Agentic AI
     resumes_text = ""
     for _, row in df.iterrows():
-        resumes_text += f"Filename: {row['filename']}\nResume:\n{row['text']}\n--------------------\n"
+        resumes_text += f"Filename: {row['filename']}\nExcerpt:\n{row['text']}\n--------------------\n"
     
-    # We can reuse run_resume_pipeline if we add a search task, 
-    # but for now, we'll implement it here or reuse the logic.
-    # Actually, the existing run_resume_pipeline doesn't have "search" yet.
-    # Let's use the existing logic from Search_Resumes.py (which uses a chain).
-    
-    # For now, let's return a mock or implement the LLM call here.
-    # To keep it consistent, I'll use the chain logic.
     from langchain_openai import ChatOpenAI
     from langchain_core.prompts import PromptTemplate
     from langchain_core.output_parsers import StrOutputParser
 
     prompt = PromptTemplate(
         input_variables=["resumes", "query"],
-        template="""Identify resumes relevant to the query. Return ONLY valid JSON.
+        template="""Identify resumes relevant to the query based on the excerpts provided. 
+        Return ONLY valid JSON.
         FORMAT: {{ "results": [ {{ "filename": "...", "score": 0, "justification": "...", "missing_skills": [], "auto_screen": "..." }} ] }}
-        Resumes: {resumes}
+        
+        Excerpts:
+        {resumes}
+        
         Query: {query}"""
     )
     
     # Initialize LLM with dynamic config if available
-    if x_openrouter_key:
-        llm = ChatOpenAI(
-            model=x_llm_model or "gpt-4o-mini",
-            api_key=x_openrouter_key,
-            base_url="https://openrouter.ai/api/v1"
-        )
-    else:
-        llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            api_key=os.getenv("OPEN_ROUTER_KEY"),
-            base_url="https://openrouter.ai/api/v1"
-        )
+    llm = ChatOpenAI(
+        model=x_llm_model or "gpt-4o-mini",
+        api_key=x_openrouter_key or os.getenv("OPEN_ROUTER_KEY"),
+        base_url="https://openrouter.ai/api/v1"
+    )
+    
     chain = prompt | llm | StrOutputParser()
     raw_result = chain.invoke({"resumes": resumes_text, "query": request.query})
+    print(f"DEBUG: LLM Raw Output: {raw_result[:200]}...")
     
     try:
         from services.skill_gap_graph import clean_json_output
         clean_res = clean_json_output(raw_result)
         return json.loads(clean_res)
-    except:
-        return {"results": [], "error": "Failed to parse AI output"}
+    except Exception as e:
+        print(f"DEBUG: Failed to parse LLM output: {e}")
+        return {"results": [], "error": f"Failed to parse AI output: {str(e)}"}
 
 @app.post("/api/analyze/quality")
 async def analyze_quality(
