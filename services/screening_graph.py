@@ -15,6 +15,7 @@ class ScreeningState(TypedDict):
     decision: Optional[dict]
     score: Optional[dict]
     config: Optional[dict]
+    threshold: int
 
 def get_llm(config: Optional[dict]):
     """Helper to initialize LLM from config or environment."""
@@ -36,7 +37,7 @@ def get_llm(config: Optional[dict]):
 def screening_agent(state: ScreeningState):
     llm = get_llm(state.get("config"))
     prompt = PromptTemplate(
-        input_variables=["resume", "jd"],
+        input_variables=["resume", "jd", "threshold"],
         template="""
 You are an expert AI recruiter.
 
@@ -46,16 +47,21 @@ Job Description:
 Candidate Resume:
 {resume}
 
+Selection Threshold: {threshold}%
+
 TASK:
-1. Evaluate if the candidate is a match for the job (Selected/Rejected).
+1. Evaluate if the candidate is a match for the job.
 2. Provide a score (0-100) based on skills, experience, and relevance.
-3. Provide a brief reason for the decision.
+3. Decision: 
+   - If the score is GREATER THAN OR EQUAL TO the threshold ({threshold}%), set "selected": true.
+   - Otherwise, set "selected": false.
+4. Provide a brief reason for the decision, mentioning the score and how it compares to the threshold.
 
 Return ONLY valid JSON:
 {{
   "decision": {{
     "selected": true,
-    "reason": "Strong match with AWS and Python experience."
+    "reason": "Score 85% is above threshold 75%."
   }},
   "score": {{
       "overall": 85
@@ -65,13 +71,33 @@ Return ONLY valid JSON:
     )
     
     try:
-        response = llm.invoke(prompt.format(resume=state["resume_text"], jd=state["jd_text"]))
+        response = llm.invoke(prompt.format(
+            resume=state["resume_text"], 
+            jd=state["jd_text"],
+            threshold=state.get("threshold", 75)
+        ))
         clean_content = clean_json_output(response.content)
         result = json.loads(clean_content)
         
+        score_val = result.get("score", {}).get("overall", 0)
+        threshold_val = state.get("threshold", 75)
+        
+        # Enforce threshold logic in Python to prevent LLM hallucinations
+        selected = score_val >= threshold_val
+        
+        # Determine decision and reasoning
+        decision = result.get("decision", {})
+        if decision.get("selected") != selected:
+            # Override if LLM made a mathematical error
+            decision["selected"] = selected
+            if selected:
+                decision["reason"] = f"Automatic override: Score {score_val}% meets or exceeds threshold {threshold_val}%. " + decision.get("reason", "")
+            else:
+                decision["reason"] = f"Automatic override: Score {score_val}% is below threshold {threshold_val}%. " + decision.get("reason", "")
+
         return {
-            "decision": result.get("decision", {"selected": False, "reason": "Error parsing decision"}),
-            "score": result.get("score", {"overall": 0})
+            "decision": decision,
+            "score": {"overall": score_val}
         }
     except Exception as e:
         return {

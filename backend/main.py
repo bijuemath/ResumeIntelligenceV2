@@ -16,7 +16,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from services.agent_controller import run_resume_pipeline, generate_resume_from_linkedin
 from services.resume_parser import extract_text
-from services.db.lancedb_client import store_resume, get_or_create_table, search_resumes_semantic
+from services.db.lancedb_client import store_resume, get_or_create_table, search_resumes_semantic, log_activity, get_dashboard_stats
 from services.export_service import generate_docx
 
 app = FastAPI(title="Resume Intelligence API")
@@ -43,6 +43,7 @@ class SearchRequest(BaseModel):
 class AnalyzeRequest(BaseModel):
     resume_text: str
     jd_text: Optional[str] = None
+    threshold: Optional[int] = 75
 
 class GenerateRequest(BaseModel):
     profile: str
@@ -84,6 +85,10 @@ async def upload_resumes(
             results.append({"filename": file.filename, "status": "error", "error": str(e)})
     
     return {"success": True, "processed": results}
+
+@app.get("/api/dashboard/stats")
+async def dashboard_stats():
+    return get_dashboard_stats()
 
 @app.post("/api/search")
 async def search_resumes(
@@ -148,6 +153,14 @@ async def analyze_quality(
 ):
     llm_config = {"api_key": x_openrouter_key, "model": x_llm_model} if x_openrouter_key else None
     output = run_resume_pipeline(task="score", resumes=[request.resume_text], llm_config=llm_config)
+    
+    # Log activity
+    try:
+        score = output.get("score", {}).get("overall", 0)
+        log_activity("quality", "Manual Input", score)
+    except:
+        pass
+        
     return output
 
 @app.post("/api/analyze/gap")
@@ -158,6 +171,14 @@ async def analyze_gap(
 ):
     llm_config = {"api_key": x_openrouter_key, "model": x_llm_model} if x_openrouter_key else None
     output = run_resume_pipeline(task="skill_gap", resumes=[request.resume_text], query=request.jd_text, llm_config=llm_config)
+    
+    # Log activity
+    try:
+        score = output.get("match_score", 0)
+        log_activity("skill_gap", "Manual Input", score)
+    except:
+        pass
+
     return output
 
 @app.post("/api/analyze/screen")
@@ -167,7 +188,22 @@ async def analyze_screen(
     x_llm_model: Optional[str] = Header(None)
 ):
     llm_config = {"api_key": x_openrouter_key, "model": x_llm_model} if x_openrouter_key else None
-    output = run_resume_pipeline(task="screen", resumes=[request.resume_text], query=request.jd_text, llm_config=llm_config)
+    output = run_resume_pipeline(
+        task="screen", 
+        resumes=[request.resume_text], 
+        query=request.jd_text, 
+        llm_config=llm_config,
+        threshold=request.threshold
+    )
+    
+    # Log activity
+    try:
+        score = output.get("score", {}).get("overall", 0)
+        decision = "SELECTED" if output.get("decision", {}).get("selected") else "REJECTED"
+        log_activity("screen", "Manual Input", score, decision)
+    except:
+        pass
+
     return output
 
 @app.post("/api/generate/resume")

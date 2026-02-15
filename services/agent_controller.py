@@ -12,7 +12,7 @@ _screening_graph = build_screening_graph()
 _generator_graph = build_resume_generator_graph()
 graph = build_resume_graph()
 
-def run_resume_pipeline(task: str, resumes: list = None, query: str = None, llm_config: dict = None):
+def run_resume_pipeline(task: str, resumes: list = None, query: str = None, llm_config: dict = None, threshold: int = 75):
     if task == "score":
         return _quality_graph.invoke(
             {"resumes": resumes, "config": llm_config}
@@ -27,7 +27,8 @@ def run_resume_pipeline(task: str, resumes: list = None, query: str = None, llm_
         return _screening_graph.invoke({
             "resume_text": resumes[0],
             "jd_text": query,
-            "config": llm_config
+            "config": llm_config,
+            "threshold": threshold
         })
     elif task == "generate":
         return _generator_graph.invoke({

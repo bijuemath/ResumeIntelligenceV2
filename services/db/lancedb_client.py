@@ -84,6 +84,77 @@ def store_resume(filename: str, text: str, api_key: str = None):
     table.add(data)
     print(f"DEBUG: Successfully stored {filename}")
 
+# ---------- ACTIVITY SCHEMA ----------
+activity_schema = pa.schema([
+    pa.field("id", pa.string()),
+    pa.field("type", pa.string()), # 'screen', 'quality', 'skill_gap'
+    pa.field("filename", pa.string()),
+    pa.field("score", pa.int32()),
+    pa.field("decision", pa.string()), # 'SELECTED', 'REJECTED', or N/A
+    pa.field("timestamp", pa.string())
+])
+
+def get_or_create_activity_table():
+    if "activity" in db.table_names():
+        return db.open_table("activity")
+    return db.create_table("activity", schema=activity_schema, mode="create")
+
+def log_activity(activity_type: str, filename: str, score: int, decision: str = "N/A"):
+    from datetime import datetime
+    table = get_or_create_activity_table()
+    table.add([{
+        "id": str(uuid4()),
+        "type": activity_type,
+        "filename": filename,
+        "score": score,
+        "decision": decision,
+        "timestamp": datetime.now().isoformat()
+    }])
+    print(f"DEBUG: Logged activity: {activity_type} for {filename}")
+
+def get_dashboard_stats():
+    resumes_table = get_or_create_table()
+    activity_table = get_or_create_activity_table()
+    
+    # Total Resumes (Unique filenames)
+    import pandas as pd
+    resumes_df = resumes_table.to_pandas()
+    total_resumes = 0
+    if not resumes_df.empty:
+        total_resumes = resumes_df['filename'].nunique()
+    
+    # Activity Stats
+    activity_df = activity_table.to_pandas()
+    
+    total_screened = 0
+    high_matches = 0
+    skill_gaps = 0
+    recent_activity = []
+
+    if not activity_df.empty:
+        total_screened = len(activity_df[activity_df['type'] == 'screen'])
+        high_matches = len(activity_df[activity_df['score'] >= 80])
+        skill_gaps = len(activity_df[activity_df['type'] == 'skill_gap'])
+        
+        # Get 5 most recent activities
+        recent_df = activity_df.sort_values(by="timestamp", ascending=False).head(5)
+        for _, row in recent_df.iterrows():
+            recent_activity.append({
+                "type": row['type'],
+                "filename": row['filename'],
+                "score": row['score'],
+                "decision": row['decision'],
+                "timestamp": row['timestamp']
+            })
+
+    return {
+        "total_resumes": total_resumes,
+        "auto_screened": total_screened,
+        "high_matches": high_matches,
+        "skill_gaps": skill_gaps,
+        "recent_activity": recent_activity
+    }
+
 # ---------- SEARCH ----------
 def search_resumes_semantic(query: str, limit: int = 5, api_key: str = None):
     print(f"DEBUG: Semantic search query: {query}")

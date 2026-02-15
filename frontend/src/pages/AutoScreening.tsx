@@ -17,7 +17,8 @@ const AutoScreening = () => {
         try {
             const response = await api.post('/analyze/screen', {
                 resume_text: resumeText,
-                jd_text: jdText
+                jd_text: jdText,
+                threshold: threshold
             });
             setResult(response.data);
         } catch (err) {
