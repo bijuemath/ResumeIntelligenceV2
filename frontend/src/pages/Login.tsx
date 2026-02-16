@@ -1,98 +1,62 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import api from '../api';
-import { Lock, User, Terminal } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { ShieldCheck, Mail, Linkedin, Lock, User as UserIcon } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 const Login = () => {
-    const [username, setUsername] = useState('');
-    const [password, setPassword] = useState('');
-    const [error, setError] = useState('');
+    const { login } = useAuth();
     const navigate = useNavigate();
+    const [status, setStatus] = useState<'idle' | 'loading'>('idle');
 
-    const handleLogin = async (e: React.FormEvent) => {
-        e.preventDefault();
-        try {
-            const response = await api.post('/auth/login', { username, password });
-            localStorage.setItem('token', response.data.token);
-            localStorage.setItem('user', JSON.stringify(response.data.user));
+    const handleLogin = (method: string) => {
+        setStatus('loading');
+        // Simulate network delay
+        setTimeout(() => {
+            login(method);
             navigate('/');
-        } catch (err) {
-            setError('Invalid credentials. Hint: recruit / admin123');
-        }
+        }, 800);
     };
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-[#f8fafc] px-4 relative overflow-hidden">
-            {/* Abstract Background Elements */}
-            <div className="absolute top-0 -left-1/4 w-full h-full bg-primary-500/5 blur-[120px] rounded-full pointer-events-none" />
-            <div className="absolute bottom-0 -right-1/4 w-1/2 h-1/2 bg-blue-500/5 blur-[120px] rounded-full pointer-events-none" />
-
-            <motion.div
-                initial={{ opacity: 0, y: 30 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.6, ease: "easeOut" }}
-                className="glass-card max-w-md w-full p-10 relative z-10 border-slate-100 bg-white/80 shadow-2xl shadow-slate-200/50"
-            >
-                <div className="flex justify-center mb-8">
-                    <div className="w-20 h-20 bg-primary-50 rounded-3xl flex items-center justify-center border border-primary-100 shadow-sm relative group overflow-hidden">
-                        <div className="absolute inset-0 bg-primary-500/10 translate-y-full group-hover:translate-y-0 transition-transform duration-500" />
-                        <Terminal className="text-primary-600 w-10 h-10 relative z-10" />
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 font-sans">
+            <div className="max-w-md w-full space-y-8 bg-slate-900 border border-slate-800 p-8 rounded-2xl shadow-2xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-blue-600/10 blur-3xl -mr-16 -mt-16"></div>
+                <div className="text-center relative z-10">
+                    <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-2xl shadow-lg shadow-blue-500/30 mb-6">
+                        <ShieldCheck className="text-white" size={32} />
                     </div>
+                    <h1 className="text-3xl font-black text-white tracking-tight">RESUME.AI</h1>
+                    <p className="mt-2 text-slate-400 text-sm">Intelligence Platform for Modern Talent</p>
                 </div>
 
-                <div className="text-center mb-10">
-                    <h1 className="text-3xl font-black text-slate-900 tracking-tighter mb-2">Resume Intelligence</h1>
-                    <p className="text-slate-400 font-bold uppercase tracking-widest text-[10px]">Strategic Talent Acquisition Hub</p>
-                </div>
-
-                <form onSubmit={handleLogin} className="space-y-6">
-                    <div className="space-y-2">
-                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Username</label>
-                        <div className="relative group">
-                            <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-primary-500 transition-colors" />
-                            <input
-                                type="text"
-                                value={username}
-                                onChange={(e) => setUsername(e.target.value)}
-                                className="w-full bg-white border border-slate-200 rounded-xl py-3.5 pl-12 pr-4 focus:border-primary-500 outline-none transition-all shadow-sm focus:ring-4 focus:ring-primary-500/5 text-slate-800 placeholder:text-slate-300 font-medium"
-                                placeholder="recruit"
-                            />
-                        </div>
-                    </div>
-
-                    <div className="space-y-2">
-                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Password</label>
-                        <div className="relative group">
-                            <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-primary-500 transition-colors" />
-                            <input
-                                type="password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                className="w-full bg-white border border-slate-200 rounded-xl py-3.5 pl-12 pr-4 focus:border-primary-500 outline-none transition-all shadow-sm focus:ring-4 focus:ring-primary-500/5 text-slate-800 placeholder:text-slate-300 font-medium"
-                                placeholder="••••••••"
-                            />
-                        </div>
-                    </div>
-
-                    {error && (
-                        <motion.div initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} className="flex items-center gap-2 text-red-500 text-xs font-bold bg-red-50 p-3 rounded-lg border border-red-100">
-                            <Lock className="w-3.5" /> {error}
-                        </motion.div>
-                    )}
-
+                <div className="space-y-4 relative z-10">
                     <button
-                        type="submit"
-                        className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black uppercase tracking-widest text-sm py-4 rounded-xl mt-6 shadow-xl shadow-slate-200 transition-all transform active:scale-[0.97]"
+                        onClick={() => handleLogin('gmail')}
+                        disabled={status === 'loading'}
+                        className="w-full flex items-center justify-center gap-3 bg-white text-slate-900 py-3.5 rounded-xl font-bold hover:bg-slate-100 transition-all active:scale-[0.98]"
                     >
-                        Authenticate Access
+                        <Mail className="text-red-500" size={20} /> Login with User Account
                     </button>
-                </form>
+                    <button
+                        onClick={() => handleLogin('linkedin')}
+                        disabled={status === 'loading'}
+                        className="w-full flex items-center justify-center gap-3 bg-[#0077b5] text-white py-3.5 rounded-xl font-bold hover:bg-[#006699] transition-all active:scale-[0.98]"
+                    >
+                        <Linkedin size={20} /> Login with LinkedIn
+                    </button>
 
-                <div className="mt-10 pt-8 border-t border-slate-100 text-center">
-                    <p className="text-slate-400 text-xs font-medium">Restricted system for authorized recruiters only.</p>
+                    <div className="relative py-4">
+                        <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-800"></div></div>
+                        <div className="relative flex justify-center text-[10px] uppercase font-bold tracking-widest"><span className="bg-slate-900 px-3 text-slate-500">Internal Access</span></div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                        <button onClick={() => handleLogin('corporate')} className="bg-slate-800 text-white p-3 rounded-xl font-bold hover:bg-slate-700 transition-all border border-slate-700 text-xs">Recruiter SSO</button>
+                        <button onClick={() => handleLogin('manager')} className="bg-slate-800 text-white p-3 rounded-xl font-bold hover:bg-slate-700 transition-all border border-slate-700 text-xs">Manager SSO</button>
+                    </div>
                 </div>
-            </motion.div>
+                <p className="text-center text-[9px] text-slate-600 uppercase tracking-widest font-bold">Secure Session • Audit Logging Enabled</p>
+            </div>
         </div>
     );
 };

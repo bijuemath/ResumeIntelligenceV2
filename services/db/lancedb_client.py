@@ -32,6 +32,7 @@ def get_embeddings_model(api_key=None, model="text-embedding-3-small"):
 # ---------- SCHEMA ----------
 resume_schema = pa.schema([
     pa.field("id", pa.string()),
+    pa.field("user_id", pa.string()), # Added for multi-tenancy
     pa.field("filename", pa.string()),
     pa.field("text", pa.string()),
     pa.field("vector", pa.list_(pa.float32(), 1536)) # Assuming text-embedding-3-small
@@ -60,8 +61,8 @@ def chunk_text(text, chunk_size=1000, chunk_overlap=200):
     return chunks
 
 # ---------- STORE ----------
-def store_resume(filename: str, text: str, api_key: str = None):
-    print(f"DEBUG: Storing resume {filename} (text length: {len(text)})")
+def store_resume(filename: str, text: str, user_id: str, api_key: str = None):
+    print(f"DEBUG: Storing resume {filename} for user {user_id} (text length: {len(text)})")
     table = get_or_create_table()
     embeddings = get_embeddings_model(api_key=api_key)
     
@@ -71,10 +72,13 @@ def store_resume(filename: str, text: str, api_key: str = None):
     
     data = []
     for i, chunk in enumerate(chunks):
-        print(f"DEBUG: Generating embedding for chunk {i+1}/{len(chunks)} of {filename}...")
+        # Only print every 10th chunk to reduce noise
+        if i % 10 == 0:
+            print(f"DEBUG: Generating embedding for chunk {i+1}/{len(chunks)}...")
         vector = embeddings.embed_query(chunk)
         data.append({
             "id": str(uuid4()),
+            "user_id": user_id,
             "filename": filename,
             "text": chunk, # Store the chunk text
             "vector": vector
@@ -87,6 +91,7 @@ def store_resume(filename: str, text: str, api_key: str = None):
 # ---------- ACTIVITY SCHEMA ----------
 activity_schema = pa.schema([
     pa.field("id", pa.string()),
+    pa.field("user_id", pa.string()), # Added for multi-tenancy
     pa.field("type", pa.string()), # 'screen', 'quality', 'skill_gap'
     pa.field("filename", pa.string()),
     pa.field("score", pa.int32()),
@@ -99,29 +104,36 @@ def get_or_create_activity_table():
         return db.open_table("activity")
     return db.create_table("activity", schema=activity_schema, mode="create")
 
-def log_activity(activity_type: str, filename: str, score: int, decision: str = "N/A"):
+def log_activity(user_id: str, activity_type: str, filename: str, score: int, decision: str = "N/A"):
     from datetime import datetime
     table = get_or_create_activity_table()
     table.add([{
         "id": str(uuid4()),
+        "user_id": user_id,
         "type": activity_type,
         "filename": filename,
         "score": score,
         "decision": decision,
         "timestamp": datetime.now().isoformat()
     }])
-    print(f"DEBUG: Logged activity: {activity_type} for {filename}")
+    print(f"DEBUG: Logged activity: {activity_type} for {filename} (User: {user_id})")
 
-def get_dashboard_stats():
+def get_dashboard_stats(user_id: str):
     resumes_table = get_or_create_table()
     activity_table = get_or_create_activity_table()
     
-    # Total Resumes (Unique filenames)
+    # Total Resumes (Unique filenames for THIS user)
+    # LanceDB filtering support depends on version, usually via where clause or pandas post-filter
+    # using pandas post-filter for simplicity in this version
+    
     import pandas as pd
     resumes_df = resumes_table.to_pandas()
+    
     total_resumes = 0
     if not resumes_df.empty:
-        total_resumes = resumes_df['filename'].nunique()
+        # Filter by user_id
+        user_resumes = resumes_df[resumes_df['user_id'] == user_id]
+        total_resumes = user_resumes['filename'].nunique()
     
     # Activity Stats
     activity_df = activity_table.to_pandas()
@@ -132,12 +144,15 @@ def get_dashboard_stats():
     recent_activity = []
 
     if not activity_df.empty:
-        total_screened = len(activity_df[activity_df['type'] == 'screen'])
-        high_matches = len(activity_df[activity_df['score'] >= 80])
-        skill_gaps = len(activity_df[activity_df['type'] == 'skill_gap'])
+        # Filter by user_id
+        user_activity = activity_df[activity_df['user_id'] == user_id]
+        
+        total_screened = len(user_activity[user_activity['type'] == 'screen'])
+        high_matches = len(user_activity[user_activity['score'] >= 80])
+        skill_gaps = len(user_activity[user_activity['type'] == 'skill_gap'])
         
         # Get 5 most recent activities
-        recent_df = activity_df.sort_values(by="timestamp", ascending=False).head(5)
+        recent_df = user_activity.sort_values(by="timestamp", ascending=False).head(5)
         for _, row in recent_df.iterrows():
             recent_activity.append({
                 "type": row['type'],
@@ -156,23 +171,19 @@ def get_dashboard_stats():
     }
 
 # ---------- SEARCH ----------
-def search_resumes_semantic(query: str, limit: int = 5, api_key: str = None):
-    print(f"DEBUG: Semantic search query: {query}")
+def search_resumes_semantic(query: str, user_id: str, limit: int = 5, api_key: str = None):
+    print(f"DEBUG: Semantic search query: {query} (User: {user_id})")
     table = get_or_create_table()
     
-    # Check if table has data
     total_rows = len(table)
-    print(f"DEBUG: Total rows in resumes table: {total_rows}")
     if total_rows == 0:
-        print("DEBUG: Table is empty, returning empty DataFrame")
         import pandas as pd
         return pd.DataFrame()
 
     embeddings = get_embeddings_model(api_key=api_key)
-    print("DEBUG: Generating query embedding...")
     query_vector = embeddings.embed_query(query)
     
-    print(f"DEBUG: Searching with limit={limit}...")
-    results = table.search(query_vector).limit(limit).to_pandas()
-    print(f"DEBUG: Found {len(results)} matches")
+    # Use LanceDB's where clause for filtering
+    results = table.search(query_vector).where(f"user_id = '{user_id}'").limit(limit).to_pandas()
+    print(f"DEBUG: Found {len(results)} matches for user {user_id}")
     return results
