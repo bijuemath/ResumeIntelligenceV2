@@ -50,21 +50,22 @@ class GenerateRequest(BaseModel):
 
 # Dependency to get current user
 async def get_current_user(authorization: Optional[str] = Header(None)):
-    # In a real app, verify JWT here. 
-    # For now, we'll strip 'Bearer ' if present to get the "token"
     token = authorization.replace("Bearer ", "") if authorization else "guest"
+    print(f"DEBUG: [auth] Authorization Header: '{authorization}' -> Token: '{token}'")
     
     if "recruiter" in token or "linkedin" in token:
-        return "user_recruiter_456"
-    
-    # Default to Alex Chen for "mock-token-123" or google login
-    return "user_alex_chen_123"
+        user_id = "user_recruiter_456"
+    else:
+        user_id = "user_alex_chen_123"
+        
+    print(f"DEBUG: [auth] Resolved User ID: {user_id}")
+    return user_id
 
 @app.post("/api/auth/login")
 async def login(request: LoginRequest):
     # Mock authentication
     if request.username == "recruit" and request.password == "admin123":
-        return {"success": True, "token": "mock-token-123", "user": {"name": "Senior Recruiter", "id": "user_recruiter_456"}}
+        return {"success": True, "token": "mock-recruiter-token-123", "user": {"name": "Senior Recruiter", "id": "user_recruiter_456"}}
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 # OAuth Configuration
@@ -289,15 +290,19 @@ async def search_resumes(
     x_llm_model: Optional[str] = Header(None),
     user_id: str = Depends(get_current_user)
 ):
-    print(f"--- Search Request: '{request.query}' for user {user_id} ---")
+    import time
+    start_time = time.time()
+    print(f"--- [Search Start] Query: '{request.query}' for user {user_id} ---")
+    
     # Perform semantic search to filter relevant resumes/chunks
+    db_start = time.time()
     df = search_resumes_semantic(request.query, user_id, limit=10, api_key=x_openrouter_key)
+    db_end = time.time()
+    print(f"DEBUG: LanceDB search took {db_end - db_start:.2f}s. Found {len(df)} results.")
     
     if df.empty:
-        print("DEBUG: Search returned 0 results from LanceDB.")
         return {"results": []}
 
-    print(f"DEBUG: Search returned {len(df)} results. Passing to LLM...")
     # Format the filtered results for the Agentic AI
     resumes_text = ""
     for _, row in df.iterrows():
@@ -319,30 +324,41 @@ async def search_resumes(
         Query: {query}"""
     )
     
+    llm_start = time.time()
+    print(f"DEBUG: Passing {len(df)} results to LLM ({x_llm_model or 'gpt-4o-mini'})...")
+    
     # Initialize LLM with dynamic config if available
     llm = ChatOpenAI(
         model=x_llm_model or "gpt-4o-mini",
         api_key=x_openrouter_key or os.getenv("OPEN_ROUTER_KEY"),
-        base_url="https://openrouter.ai/api/v1"
+        base_url="https://openrouter.ai/api/v1",
+        timeout=30 # Add a timeout to prevent infinite hanging
     )
     
-    chain = prompt | llm | StrOutputParser()
-    raw_result = chain.invoke({"resumes": resumes_text, "query": request.query})
-    print(f"DEBUG: LLM Raw Output: {raw_result[:200]}...")
-    
     try:
+        chain = prompt | llm | StrOutputParser()
+        raw_result = chain.invoke({"resumes": resumes_text, "query": request.query})
+        llm_end = time.time()
+        print(f"DEBUG: LLM response received in {llm_end - llm_start:.2f}s.")
+        print(f"DEBUG: LLM Raw Output (first 100 char): {raw_result[:100]}...")
+        
         from services.skill_gap_graph import clean_json_output
         clean_res = clean_json_output(raw_result)
-        return json.loads(clean_res)
+        parsed_result = json.loads(clean_res)
+        
+        total_time = time.time() - start_time
+        print(f"--- [Search End] Total time: {total_time:.2f}s ---")
+        return parsed_result
     except Exception as e:
-        print(f"DEBUG: Failed to parse LLM output: {e}")
-        return {"results": [], "error": f"Failed to parse AI output: {str(e)}"}
+        print(f"DEBUG: Error during LLM processing: {e}")
+        return {"results": [], "error": f"Search failed or timed out: {str(e)}"}
 
 @app.post("/api/analyze/quality")
 async def analyze_quality(
     request: AnalyzeRequest,
     x_openrouter_key: Optional[str] = Header(None),
-    x_llm_model: Optional[str] = Header(None)
+    x_llm_model: Optional[str] = Header(None),
+    user_id: str = Depends(get_current_user)
 ):
     llm_config = {"api_key": x_openrouter_key, "model": x_llm_model} if x_openrouter_key else None
     output = run_resume_pipeline(task="score", resumes=[request.resume_text], llm_config=llm_config)
@@ -350,9 +366,9 @@ async def analyze_quality(
     # Log activity
     try:
         score = output.get("score", {}).get("overall", 0)
-        log_activity("quality", "Manual Input", score)
-    except:
-        pass
+        log_activity(user_id, "quality", "Manual Input", score)
+    except Exception as e:
+        print(f"DEBUG: Failed to log quality activity: {e}")
         
     return output
 
@@ -360,7 +376,8 @@ async def analyze_quality(
 async def analyze_gap(
     request: AnalyzeRequest,
     x_openrouter_key: Optional[str] = Header(None),
-    x_llm_model: Optional[str] = Header(None)
+    x_llm_model: Optional[str] = Header(None),
+    user_id: str = Depends(get_current_user)
 ):
     llm_config = {"api_key": x_openrouter_key, "model": x_llm_model} if x_openrouter_key else None
     output = run_resume_pipeline(task="skill_gap", resumes=[request.resume_text], query=request.jd_text, llm_config=llm_config)
@@ -368,9 +385,9 @@ async def analyze_gap(
     # Log activity
     try:
         score = output.get("match_score", 0)
-        log_activity("skill_gap", "Manual Input", score)
-    except:
-        pass
+        log_activity(user_id, "skill_gap", "Manual Input", score)
+    except Exception as e:
+        print(f"DEBUG: Failed to log skill_gap activity: {e}")
 
     return output
 
@@ -378,7 +395,8 @@ async def analyze_gap(
 async def analyze_screen(
     request: AnalyzeRequest,
     x_openrouter_key: Optional[str] = Header(None),
-    x_llm_model: Optional[str] = Header(None)
+    x_llm_model: Optional[str] = Header(None),
+    user_id: str = Depends(get_current_user)
 ):
     llm_config = {"api_key": x_openrouter_key, "model": x_llm_model} if x_openrouter_key else None
     output = run_resume_pipeline(
@@ -393,9 +411,9 @@ async def analyze_screen(
     try:
         score = output.get("score", {}).get("overall", 0)
         decision = "SELECTED" if output.get("decision", {}).get("selected") else "REJECTED"
-        log_activity("screen", "Manual Input", score, decision)
-    except:
-        pass
+        log_activity(user_id, "screen", "Manual Input", score, decision)
+    except Exception as e:
+        print(f"DEBUG: Failed to log screen activity: {e}")
 
     return output
 

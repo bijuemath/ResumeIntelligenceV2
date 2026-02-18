@@ -14,20 +14,34 @@ DB_PATH.mkdir(parents=True, exist_ok=True)
 
 db = lancedb.connect(DB_PATH)
 
-# ---------- EMBEDDINGS ----------
+# ---------- EMBEDDINGS CACHE ----------
+_embeddings_cache = {}
+
 def get_embeddings_model(api_key=None, model="text-embedding-3-small"):
     key = api_key or os.getenv("OPEN_ROUTER_KEY")
     if not key:
+        print("DEBUG: [embeddings] ERROR: No API key found for embeddings")
         raise ValueError("OPEN_ROUTER_KEY is required for semantic search. Please set it in your .env file or environment.")
     
     # OpenRouter often requires 'openai/' prefix for OpenAI models
     model_name = model if "/" in model else f"openai/{model}"
     
-    return OpenAIEmbeddings(
+    # Check cache
+    cache_key = (key, model_name)
+    if cache_key in _embeddings_cache:
+        return _embeddings_cache[cache_key]
+    
+    print(f"DEBUG: [embeddings] Initializing NEW model instance: {model_name} via OpenRouter")
+    
+    embeddings = OpenAIEmbeddings(
         model=model_name,
         openai_api_key=key,
-        openai_api_base="https://openrouter.ai/api/v1"
+        openai_api_base="https://openrouter.ai/api/v1",
+        request_timeout=15.0
     )
+    
+    _embeddings_cache[cache_key] = embeddings
+    return embeddings
 
 # ---------- SCHEMA ----------
 resume_schema = pa.schema([
@@ -119,21 +133,22 @@ def log_activity(user_id: str, activity_type: str, filename: str, score: int, de
     print(f"DEBUG: Logged activity: {activity_type} for {filename} (User: {user_id})")
 
 def get_dashboard_stats(user_id: str):
+    print(f"DEBUG: [stats] Fetching stats for user: {user_id}")
     resumes_table = get_or_create_table()
     activity_table = get_or_create_activity_table()
-    
-    # Total Resumes (Unique filenames for THIS user)
-    # LanceDB filtering support depends on version, usually via where clause or pandas post-filter
-    # using pandas post-filter for simplicity in this version
     
     import pandas as pd
     resumes_df = resumes_table.to_pandas()
     
     total_resumes = 0
     if not resumes_df.empty:
-        # Filter by user_id
+        # Trace available IDs
+        available = resumes_df['user_id'].unique().tolist()
+        print(f"DEBUG: [stats] Resumes table Users: {available}")
+        
         user_resumes = resumes_df[resumes_df['user_id'] == user_id]
         total_resumes = user_resumes['filename'].nunique()
+        print(f"DEBUG: [stats] Found {total_resumes} resumes for {user_id}")
     
     # Activity Stats
     activity_df = activity_table.to_pandas()
@@ -141,25 +156,31 @@ def get_dashboard_stats(user_id: str):
     total_screened = 0
     high_matches = 0
     skill_gaps = 0
+    quality_scored = 0
     recent_activity = []
 
     if not activity_df.empty:
+        available_act = activity_df['user_id'].unique().tolist()
+        print(f"DEBUG: [stats] Activity table Users: {available_act}")
+
         # Filter by user_id
         user_activity = activity_df[activity_df['user_id'] == user_id]
+        print(f"DEBUG: [stats] Found {len(user_activity)} activities for {user_id}")
         
         total_screened = len(user_activity[user_activity['type'] == 'screen'])
         high_matches = len(user_activity[user_activity['score'] >= 80])
         skill_gaps = len(user_activity[user_activity['type'] == 'skill_gap'])
+        quality_scored = len(user_activity[user_activity['type'] == 'quality'])
         
         # Get 5 most recent activities
         recent_df = user_activity.sort_values(by="timestamp", ascending=False).head(5)
         for _, row in recent_df.iterrows():
             recent_activity.append({
                 "type": row['type'],
-                "filename": row['filename'],
-                "score": row['score'],
-                "decision": row['decision'],
-                "timestamp": row['timestamp']
+                "filename": row.get('filename', 'N/A'),
+                "score": row.get('score', 0),
+                "decision": row.get('decision', 'N/A'),
+                "timestamp": row.get('timestamp', '')
             })
 
     return {
@@ -167,6 +188,7 @@ def get_dashboard_stats(user_id: str):
         "auto_screened": total_screened,
         "high_matches": high_matches,
         "skill_gaps": skill_gaps,
+        "quality_scored": quality_scored,
         "recent_activity": recent_activity
     }
 
@@ -181,7 +203,12 @@ def search_resumes_semantic(query: str, user_id: str, limit: int = 5, api_key: s
         return pd.DataFrame()
 
     embeddings = get_embeddings_model(api_key=api_key)
-    query_vector = embeddings.embed_query(query)
+    
+    try:
+        query_vector = embeddings.embed_query(query)
+    except Exception as e:
+        print(f"DEBUG: [search] FATAL: embed_query failed: {e}")
+        raise e
     
     # Use LanceDB's where clause for filtering
     results = table.search(query_vector).where(f"user_id = '{user_id}'").limit(limit).to_pandas()

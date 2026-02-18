@@ -1,16 +1,1 @@
 node_modules
-.env
-*.env
-backend/.env
-# python cache
-__pycache__/
-*.pyc
-
-# venv
-venv/
-RIVenv/
-
-# node
-node_modules/
-dist/
-build/
